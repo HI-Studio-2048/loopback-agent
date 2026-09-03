@@ -85,6 +85,16 @@ footer,
   color: var(--red);
 }
 
+.banner[data-state="attached"] {
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.banner[data-state="missing"] {
+  background: var(--gold-dim);
+  color: var(--gold);
+}
+
 .banner[data-state="checking"] {
   background: var(--blue-dim);
   color: var(--blue);
