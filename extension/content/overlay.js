@@ -10,7 +10,9 @@ if (!window.__LPC_OVERLAY__) {
 
   /** Glide duration. Keep inside 180–280ms; never teleport. */
   const MOVE_MS = 240;
+  const DWELL_MS = 600;
   const HOST_ID = "loopback-agent-overlay-host";
+  const TITLE_PREFIX = "Grok · ";
 
   let enabled = true;
   let host = null;
@@ -20,10 +22,36 @@ if (!window.__LPC_OVERLAY__) {
   let moveToken = 0;
   let typing = false;
   let hudState = { verb: "Idle", title: "", host: "", phase: "idle" };
+  let titleOwned = false;
+
+  function prefixTitle() {
+    if (document.title.startsWith(TITLE_PREFIX)) return;
+    titleOwned = true;
+    document.title = TITLE_PREFIX + document.title;
+  }
+
+  function restoreTitle() {
+    if (titleOwned && document.title.startsWith(TITLE_PREFIX)) {
+      document.title = document.title.slice(TITLE_PREFIX.length);
+    }
+    titleOwned = false;
+  }
 
   const CSS = `
     :host, * { box-sizing: border-box; pointer-events: none !important; }
     .layer { position: fixed; inset: 0; z-index: 2147483646; pointer-events: none; }
+    .tabchip {
+      position: fixed; top: 0; left: 0; right: 0;
+      display: flex; justify-content: center;
+      z-index: 3;
+    }
+    .tabchip span {
+      background: #e08a1e; color: #1a1406;
+      font: 750 13px/1 ui-sans-serif, system-ui, sans-serif;
+      padding: 7px 16px 8px; border-radius: 0 0 10px 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      border-bottom: 3px solid #1a1406;
+    }
     .hud {
       position: fixed; left: 12px; bottom: 12px; top: auto; right: auto;
       transform: none;
@@ -41,13 +69,13 @@ if (!window.__LPC_OVERLAY__) {
     .hud .phase-pick { color: #e0b44b; }
     .ring {
       position: fixed; left: 0; top: 0; width: 0; height: 0;
-      border: 2px solid #e0b44b; border-radius: 10px;
+      border: 4px solid #e0b44b; border-radius: 10px;
       box-shadow: 0 0 0 4px rgba(224,180,75,0.22);
       opacity: 0;
     }
     .ring.on { opacity: 1; }
     .cursor {
-      position: fixed; left: 0; top: 0; width: 28px; height: 28px;
+      position: fixed; left: 0; top: 0; width: 32px; height: 32px;
       transform: translate(48px, 80px);
       filter: drop-shadow(0 2px 6px rgba(0,0,0,0.45));
       z-index: 2;
@@ -95,6 +123,7 @@ if (!window.__LPC_OVERLAY__) {
     shadow = host.attachShadow({ mode: "open" });
     shadow.innerHTML = `<style>${CSS}</style>
       <div class="layer">
+        <div class="tabchip" id="tabchip"><span>Grok</span></div>
         <div class="hud" id="hud" title="Loopback Agent"></div>
         <div class="ring" id="ring"></div>
         <div class="ripple" id="ripple"></div>
@@ -107,6 +136,7 @@ if (!window.__LPC_OVERLAY__) {
       ripple: shadow.getElementById("ripple"),
       chip: shadow.getElementById("chip"),
       cursor: shadow.getElementById("cursor"),
+      tabchip: shadow.getElementById("tabchip"),
     };
     document.documentElement.appendChild(host);
     setCursor(cursorPos.x, cursorPos.y);
@@ -268,6 +298,7 @@ if (!window.__LPC_OVERLAY__) {
       setRing(rect, true);
       const c = center(rect);
       await moveCursor(c.x, c.y, MOVE_MS);
+      await sleep(DWELL_MS);
       rippleAt(c.x, c.y);
       await sleep(90);
     }
@@ -316,6 +347,7 @@ if (!window.__LPC_OVERLAY__) {
       return;
     }
     ensureDom();
+    prefixTitle();
     if (!typing) hideChip();
     applyHud({
       verb: (meta && meta.verb) || step || hudState.verb || "Acting",
@@ -328,6 +360,7 @@ if (!window.__LPC_OVERLAY__) {
   function hide() {
     hideChip();
     setRing(null, false);
+    restoreTitle();
     destroy();
   }
 
