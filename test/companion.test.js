@@ -159,8 +159,9 @@ describe("loopback companion", () => {
       startUrl: "https://studio.youtube.com",
     });
     assert.equal(created.status, 201);
-    assert.equal(created.data.status, "running");
+    assert.equal(created.data.status, "queued");
     assert.notEqual(created.data.status, "published");
+    assert.notEqual(created.data.status, "running");
     assert.equal(created.data.act.noPublish, true);
     assert.equal(created.data.act.fillTitle, "Companion test");
     const second = await json("POST", "/v1/act", { intent: "another" });
@@ -185,9 +186,9 @@ describe("loopback companion", () => {
       preview: "About to click Publish. Confirm or Deny.",
     });
     assert.equal(gated.status, 200);
-    assert.equal(gated.data.act.status, "awaiting_gate");
+    assert.equal(gated.data.act.status, "waiting_confirm");
     const confirmed = await json("POST", "/v1/confirm", { id: created.data.id });
-    assert.equal(confirmed.data.act.status, "running");
+    assert.equal(confirmed.data.act.status, "acting");
     assert.equal(confirmed.data.act.allowGatedOnce, true);
     assert.notEqual(confirmed.data.act.status, "published");
   });
@@ -206,7 +207,7 @@ describe("loopback companion", () => {
       preview: "About to click Publish.",
     });
     assert.equal(gated.status, 200);
-    assert.equal(gated.data.act.status, "awaiting_gate");
+    assert.equal(gated.data.act.status, "waiting_confirm");
     assert.notEqual(gated.data.act.status, "published");
   });
 
@@ -233,5 +234,93 @@ describe("loopback companion", () => {
     const res = await json("POST", "/v1/prepare-file", { path: "/tmp/loopback-post-missing-nope.txt" });
     assert.equal(res.status, 422);
     assert.equal(res.data.error, "file_unreadable");
+  });
+
+  it("POST /v1/act preserves mediaPath/title/description/visibility/noPublish on the public act", async () => {
+    const created = await json("POST", "/v1/act", {
+      platform: "youtube",
+      intent: "Upload this video to YouTube Studio",
+      mediaPath: "/absolute/path/video.mp4",
+      title: "Studio upload test",
+      description: "Loopback companion upload",
+      visibility: "UNLISTED",
+      noPublish: true,
+    });
+    assert.equal(created.status, 201);
+    const act = created.data.act;
+    assert.equal(act.mediaPath, "/absolute/path/video.mp4");
+    assert.equal(act.title, "Studio upload test");
+    assert.equal(act.description, "Loopback companion upload");
+    assert.equal(act.visibility, "UNLISTED");
+    assert.equal(act.noPublish, true);
+    assert.equal(act.platform, "youtube");
+    assert.equal(act.startUrl, "https://studio.youtube.com");
+    assert.equal(act.planKind, "youtube_upload");
+    assert.ok(act.plan);
+    assert.equal(act.plan.steps[0], "open_studio");
+    assert.equal(act.plan.steps[act.plan.steps.length - 1], "stop_publish");
+    assert.equal(act.status, "queued");
+    assert.notEqual(act.status, "running");
+  });
+
+  it("noPublish upload parks at ready_for_publish and does not publish", async () => {
+    const created = await json("POST", "/v1/act", {
+      platform: "youtube",
+      intent: "Upload this video to YouTube Studio",
+      mediaPath: "/tmp/video.mp4",
+      title: "T",
+      description: "D",
+      visibility: "UNLISTED",
+      noPublish: true,
+    });
+    const parked = await json("POST", "/v1/result", {
+      id: created.data.id,
+      status: "ready_for_publish",
+      message: "YouTube upload is filled. Publish/Save was not clicked (noPublish=true).",
+    });
+    assert.equal(parked.status, 200);
+    assert.equal(parked.data.act.status, "ready_for_publish");
+    assert.notEqual(parked.data.act.status, "published");
+    assert.match(parked.data.act.progress, /not clicked/);
+  });
+
+  it("allows a parallel general new-tab act while upload is waiting_user and rejects tab hijack", async () => {
+    const upload = await json("POST", "/v1/act", {
+      platform: "youtube",
+      intent: "Upload this video to YouTube Studio",
+      mediaPath: "/tmp/video.mp4",
+      title: "T",
+      noPublish: true,
+    });
+    assert.equal(upload.status, 201);
+    const park = await json("POST", "/v1/progress", {
+      id: upload.data.id,
+      tabId: 77,
+      status: "waiting_user",
+      message: "Waiting on the upload tab.",
+    });
+    assert.equal(park.data.act.tabId, 77);
+    assert.equal(park.data.act.status, "waiting_user");
+
+    const general = await json("POST", "/v1/act", {
+      intent: "Snapshot a docs tab. Do not click Publish.",
+    });
+    assert.equal(general.status, 201, JSON.stringify(general.data));
+    assert.equal(general.data.act.newTab, true);
+    assert.notEqual(general.data.act.id, upload.data.id);
+
+    const hijack = await json("POST", "/v1/tool", {
+      id: general.data.id,
+      tool: "snapshot",
+      tabId: 77,
+    });
+    assert.equal(hijack.status, 409);
+    assert.equal(hijack.data.error, "CROSS_ACT_TAB");
+
+    const own = await json("POST", "/v1/tool", {
+      id: general.data.id,
+      tool: "snapshot",
+    });
+    assert.equal(own.status, 202);
   });
 });

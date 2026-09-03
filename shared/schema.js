@@ -6,10 +6,17 @@
 const PLATFORMS = ["youtube", "instagram"];
 
 const STATUSES = [
+  "queued",
   "pending",
   "confirmed",
+  "planning",
+  "acting",
   "running",
+  "waiting_confirm",
   "awaiting_gate",
+  "waiting_user",
+  "waiting_file_picker",
+  "ready_for_publish",
   "completed",
   "published",
   "denied",
@@ -18,8 +25,34 @@ const STATUSES = [
   "failed",
 ];
 
-/** Statuses that block a second POST /v1/act or /v1/post-request. */
-const BLOCKING_STATUSES = ["pending", "confirmed", "running", "awaiting_gate"];
+const BUSY_STATUSES = ["queued", "pending", "confirmed", "planning", "acting", "running"];
+const PARKED_STATUSES = [
+  "waiting_confirm",
+  "awaiting_gate",
+  "waiting_user",
+  "waiting_file_picker",
+  "ready_for_publish",
+];
+const LIVE_STATUSES = [...BUSY_STATUSES, ...PARKED_STATUSES];
+
+/** Live acts that still occupy Confirm/Deny. Busy acts 409 a second executor. */
+const BLOCKING_STATUSES = LIVE_STATUSES;
+
+function isBusyStatus(status) {
+  return BUSY_STATUSES.includes(status);
+}
+
+function isParkedStatus(status) {
+  return PARKED_STATUSES.includes(status);
+}
+
+function isLiveStatus(status) {
+  return LIVE_STATUSES.includes(status);
+}
+
+function isConfirmStatus(status) {
+  return status === "waiting_confirm" || status === "awaiting_gate" || status === "pending";
+}
 
 const TOOLS = [
   "snapshot",
@@ -125,6 +158,43 @@ const ERRORS = {
     http: 409,
     message: "That control is gated (Publish/Post/Send/Pay/Delete/Share). Confirm in the side panel.",
   },
+  CROSS_ACT_TAB: {
+    code: "CROSS_ACT_TAB",
+    http: 409,
+    message: "That tab belongs to another act. Tool calls must use this act's tabId.",
+  },
+  OVERLAY_INJECT_FAILED: {
+    code: "OVERLAY_INJECT_FAILED",
+    http: 422,
+    message:
+      "Overlay did not ack on this tab (LPC_OVERLAY_PING). No click or type ran. Reload the unpacked extension, Allow this site, and retry.",
+    retryable: true,
+  },
+  HOST_NOT_ALLOWED: {
+    code: "HOST_NOT_ALLOWED",
+    http: 403,
+    message: "Allow this site first — overlay not on this tab.",
+    retryable: true,
+  },
+  EXTENSION_DISCONNECTED: {
+    code: "EXTENSION_DISCONNECTED",
+    http: 422,
+    message:
+      "Extension stopped talking to the companion. Reload Loopback and keep the side panel open. The act did not continue.",
+    retryable: true,
+  },
+  WRONG_PROFILE: {
+    code: "WRONG_PROFILE",
+    http: 422,
+    message:
+      "Companion is up but this Chrome never polls. Load Loopback in this profile and keep the side panel open.",
+    retryable: true,
+  },
+  CROSS_ACT_TAB: {
+    code: "CROSS_ACT_TAB",
+    http: 409,
+    message: "That tab belongs to another act. Tool calls must use this act's tabId.",
+  },
 };
 
 const DEFAULT_PORT = 18741;
@@ -209,6 +279,51 @@ function validatePostRequest(body) {
   };
 }
 
+function normalizeVisibility(value) {
+  if (value == null || value === "") return null;
+  const s = String(value).trim().toUpperCase();
+  if (s === "PUBLIC" || s === "PRIVATE" || s === "UNLISTED") return s;
+  return undefined;
+}
+
+function normalizeAudience(value) {
+  if (value == null || value === "") return null;
+  const s = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/\s+/g, "_");
+  if (s === "made_for_kids" || s === "for_kids" || s === "yes" || s === "kids") return "made_for_kids";
+  if (s === "not_for_kids" || s === "no" || s === "not_made_for_kids") return "not_for_kids";
+  return undefined;
+}
+
+function inferPlatform(body, intent, startUrl) {
+  if (typeof body.platform === "string" && body.platform.trim()) {
+    const p = body.platform.trim().toLowerCase();
+    if (!PLATFORMS.includes(p)) {
+      return {
+        error: {
+          ...ERRORS.invalid_request,
+          message: "platform must be youtube or instagram.",
+        },
+      };
+    }
+    return { value: p };
+  }
+  const blob = `${intent || ""} ${startUrl || ""}`;
+  if (/instagram\.com|\binstagram\b/i.test(blob)) return { value: "instagram" };
+  if (/youtube\.com|studio\.youtube|\byoutube\b/i.test(blob)) return { value: "youtube" };
+  return { value: null };
+}
+
+function isYoutubeUpload(value) {
+  if (!value) return false;
+  if (value.platform !== "youtube") return false;
+  if (value.mediaPath) return true;
+  return /upload/i.test(String(value.intent || ""));
+}
+
 function validateAct(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { error: ERRORS.invalid_request };
@@ -231,15 +346,75 @@ function validateAct(body) {
     }
     startUrl = String(body.startUrl).trim();
   }
+  const inferred = inferPlatform(body, intent, startUrl);
+  if (inferred.error) return inferred;
+  const platform = inferred.value;
+
+  const vis = normalizeVisibility(body.visibility);
+  if (vis === undefined) {
+    return {
+      error: {
+        ...ERRORS.invalid_request,
+        message: "visibility must be UNLISTED, PUBLIC, or PRIVATE.",
+      },
+    };
+  }
+  const audience = normalizeAudience(body.audience);
+  if (audience === undefined) {
+    return {
+      error: {
+        ...ERRORS.invalid_request,
+        message: "audience must be not_for_kids or made_for_kids.",
+      },
+    };
+  }
+
+  const tags = normalizeTags(body.tags);
+  if (tags == null) {
+    return { error: ERRORS.invalid_request };
+  }
+
   const parsed = parseIntent(intent);
+  const title =
+    body.title == null || body.title === "" ? parsed.title : String(body.title);
+  const descriptionRaw =
+    body.description != null && body.description !== ""
+      ? String(body.description)
+      : body.caption != null && body.caption !== ""
+        ? String(body.caption)
+        : parsed.description;
+  const caption =
+    body.caption != null && body.caption !== ""
+      ? String(body.caption)
+      : descriptionRaw || "";
+  const mediaPath =
+    body.mediaPath == null || body.mediaPath === "" ? null : String(body.mediaPath);
+  const noPublish = body.noPublish != null ? Boolean(body.noPublish) : Boolean(parsed.noPublish);
+
+  const wantsUpload = platform === "youtube" && (Boolean(mediaPath) || /upload/i.test(intent));
+  if (wantsUpload && !startUrl) {
+    startUrl = "https://studio.youtube.com";
+  }
+  if (platform === "instagram" && !startUrl) {
+    startUrl = "https://www.instagram.com/";
+  }
+
   return {
     value: {
       intent,
       startUrl,
       confirmToStart: Boolean(body.confirmToStart),
-      noPublish: parsed.noPublish,
-      fillTitle: parsed.title,
-      fillDescription: parsed.description,
+      platform,
+      mediaPath,
+      title: title || null,
+      description: descriptionRaw || null,
+      caption,
+      tags,
+      visibility: vis || (wantsUpload ? "UNLISTED" : null),
+      audience: audience || (wantsUpload ? "not_for_kids" : null),
+      noPublish,
+      fillTitle: title || null,
+      fillDescription: descriptionRaw || null,
     },
   };
 }
@@ -271,8 +446,11 @@ function publicRequest(req) {
     platform: req.platform || null,
     caption: req.caption || "",
     title: req.title || null,
+    description: req.description || null,
     tags: req.tags || [],
     mediaPath: req.mediaPath || null,
+    visibility: req.visibility || null,
+    audience: req.audience || null,
     intent: req.intent || null,
     startUrl: req.startUrl || null,
     confirmToStart: Boolean(req.confirmToStart),
@@ -284,6 +462,9 @@ function publicRequest(req) {
     error: req.error || null,
     progress: req.progress || null,
     step: req.step || null,
+    planKind: req.planKind || null,
+    planStep: req.planStep || null,
+    tabId: req.tabId || null,
     createdAt: req.createdAt,
     updatedAt: req.updatedAt,
     expiresAt: req.expiresAt,
@@ -292,6 +473,16 @@ function publicRequest(req) {
 
 function publicAct(req) {
   if (!req) return null;
+  const plan = req.plan
+    ? {
+        kind: req.plan.kind,
+        noPublish: Boolean(req.plan.noPublish),
+        visibility: req.plan.visibility || null,
+        audience: req.plan.audience || null,
+        audienceNote: req.plan.audienceNote || null,
+        steps: Array.isArray(req.plan.steps) ? req.plan.steps.map((s) => s.id) : [],
+      }
+    : null;
   return {
     ...publicRequest(req),
     command: req.command
@@ -305,11 +496,13 @@ function publicAct(req) {
     snapshot: req.snapshotMeta || null,
     axCount: req.axCount || 0,
     allowGatedOnce: Boolean(req.allowGatedOnce),
+    newTab: Boolean(req.newTab),
+    plan,
   };
 }
 
 function composerUrl(platform) {
-  if (platform === "youtube") return "https://www.youtube.com/upload";
+  if (platform === "youtube") return "https://studio.youtube.com";
   if (platform === "instagram") return "https://www.instagram.com/";
   return null;
 }
@@ -317,14 +510,17 @@ function composerUrl(platform) {
 function postRequestToAct(parsed) {
   const title = parsed.title || "";
   const caption = parsed.caption || "";
-  const intent = `Post to ${parsed.platform}. Title ${title}. Description ${caption}.`;
+  const intent = `Upload to ${parsed.platform}. Title ${title}. Description ${caption}.`;
   return {
     kind: "post-request",
     platform: parsed.platform,
     caption: parsed.caption,
     title: parsed.title,
+    description: parsed.caption || null,
     tags: parsed.tags,
     mediaPath: parsed.mediaPath,
+    visibility: parsed.platform === "youtube" ? "UNLISTED" : null,
+    audience: parsed.platform === "youtube" ? "not_for_kids" : null,
     intent,
     startUrl: composerUrl(parsed.platform),
     confirmToStart: true,
@@ -338,6 +534,9 @@ module.exports = {
   PLATFORMS,
   STATUSES,
   BLOCKING_STATUSES,
+  BUSY_STATUSES,
+  PARKED_STATUSES,
+  LIVE_STATUSES,
   TOOLS,
   GATED_VERBS,
   ERRORS,
@@ -345,10 +544,20 @@ module.exports = {
   DEFAULT_HOST,
   DEFAULT_TTL_MS,
   parseIntent,
+  normalizeTags,
+  normalizeVisibility,
+  normalizeAudience,
+  inferPlatform,
+  isYoutubeUpload,
+  isBusyStatus,
+  isParkedStatus,
+  isLiveStatus,
+  isConfirmStatus,
   validatePostRequest,
   validateAct,
   validateTool,
   publicRequest,
   publicAct,
+  composerUrl,
   postRequestToAct,
 };

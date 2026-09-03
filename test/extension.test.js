@@ -71,6 +71,7 @@ test("overlay script is a visible clicker (not stealth)", () => {
   assert.match(src, /You pick/);
   assert.match(src, /file_chooser_user_pick/);
   assert.match(src, /LPC_OVERLAY_TYPE_DONE/);
+  assert.match(src, /DWELL_MS/);
   assert.doesNotMatch(src, /left:\s*50%/);
 });
 
@@ -109,6 +110,40 @@ test("background loads CDP helper; debugger is not a silent all_urls grant", () 
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
   assert.ok(manifest.permissions.includes("debugger"));
   assert.equal(manifest.host_permissions.includes("<all_urls>"), false);
+});
+
+test("overlay ping is required before CDP click/type; Grok badge is tab-scoped", () => {
+  const bg = fs.readFileSync(path.join(root, "background.js"), "utf8");
+  assert.match(bg, /LPC_OVERLAY_PING/);
+  assert.match(bg, /ensureOverlayAcked/);
+  assert.match(bg, /injectImmediately:\s*true/);
+  assert.match(bg, /content\/overlay\.js/);
+  assert.match(bg, /setBadgeText\(\{ text: "Grok"/);
+  assert.match(bg, /openDedicatedActTab/);
+  assert.doesNotMatch(bg, /Ready\. Use POST \/v1\/tool/);
+  assert.match(bg, /ready_for_publish/);
+  assert.match(bg, /HOST_NOT_ALLOWED/);
+  assert.match(bg, /CROSS_ACT_TAB/);
+});
+
+test("youtube upload plan runs audience + visibility and noPublish ready_for_publish", () => {
+  const yt = fs.readFileSync(path.join(root, "content/youtube.js"), "utf8");
+  assert.match(yt, /audience_not_for_kids/);
+  assert.match(yt, /not made for kids/);
+  assert.match(yt, /ready_for_publish/);
+  assert.match(yt, /UNLISTED/);
+  assert.match(yt, /stop_publish/);
+  assert.doesNotMatch(yt, /LPC_CLICK_GATED/);
+});
+
+test("in-page Grok chip and dwell before click", () => {
+  const src = fs.readFileSync(path.join(root, "content/overlay.js"), "utf8");
+  assert.match(src, /tabchip/);
+  assert.match(src, />Grok</);
+  assert.match(src, /Grok · /);
+  const dwell = src.match(/DWELL_MS\s*=\s*(\d+)/);
+  assert.ok(dwell);
+  assert.ok(Number(dwell[1]) >= 600);
 });
 
 test("file inputs intercept the chooser; gated/file steps do not fall back to in-page click", () => {

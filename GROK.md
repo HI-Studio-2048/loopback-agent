@@ -17,15 +17,17 @@ Base URL: `http://127.0.0.1:18741`
 
 One act at a time. `409 already_pending` means deny or wait.
 
-### Queue an intent (does not publish)
+### Queue a YouTube upload (does not publish)
 
 ```bash
 curl -sS -X POST http://127.0.0.1:18741/v1/act \
   -H 'Content-Type: application/json' \
-  -d '{"intent":"Open YouTube Studio and fill title Companion test and description Test from companion. Do not click Publish.","startUrl":"https://studio.youtube.com"}'
+  -d '{"platform":"youtube","intent":"Upload this video to YouTube Studio","mediaPath":"/absolute/path/video.mp4","title":"Studio upload test","description":"Loopback companion upload","visibility":"UNLISTED","noPublish":true}'
 ```
 
-`/v1/act` starts immediately unless `confirmToStart: true`. `/v1/post-request` always waits for Confirm-to-start.
+`mediaPath`, `title`, `description`, and `visibility` are stored on the act (local path is okay; never cookies/tokens). Sequence: `queued` → `planning` → `acting` → `ready_for_publish`. Publish/Save is not clicked when `noPublish` is true.
+
+`/v1/act` starts immediately unless `confirmToStart: true`. `/v1/post-request` always waits for Confirm-to-start. A general intent without a YouTube upload plan parks at `waiting_user` (not `running`) until you send `/v1/tool` with that act id (and its `tabId`). Do not hijack an upload tab.
 
 ### Poll
 

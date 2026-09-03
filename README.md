@@ -51,17 +51,21 @@ In the side panel, with that site focused in Chrome:
 
 Gated actions still require Confirm on an allowed host.
 
-### 5. Example act that STOPS BEFORE Publish
+### 5. YouTube upload (stops before Publish/Save)
+
+Reload the unpacked extension after pulling (`chrome://extensions` → Loopback Agent → **Reload**). Allow `https://studio.youtube.com` in the side panel. Then:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:18741/v1/act -H 'Content-Type: application/json' -d '{"intent":"Open YouTube Studio and fill title Companion test and description Test from companion. Do not click Publish.","startUrl":"https://studio.youtube.com"}'
+curl -sS -X POST http://127.0.0.1:18741/v1/act -H 'Content-Type: application/json' -d '{"platform":"youtube","intent":"Upload this video to YouTube Studio","mediaPath":"/absolute/path/video.mp4","title":"Studio upload test","description":"Loopback companion upload","visibility":"UNLISTED","noPublish":true}'
 ```
 
-You should get **201** with `"status":"running"` (or `pending` if you sent `confirmToStart: true`). That curl **does not publish**. Keep the side panel open.
+Expected status sequence: **`queued` → `planning` → `acting`** (open Studio tab, overlay ping, Create, Upload videos, attachFile, title, description, not-made-for-kids, Next, Unlisted) → **`ready_for_publish`**. Publish/Save/Done is **not** clicked. `mediaPath` stays on `GET /v1/pending`. This is **not** `running` while waiting for manual `/v1/tool` calls.
+
+If `noPublish` is omitted/false, the last state is **`waiting_confirm`** (Confirm Save/Publish in the side panel). `"gated": false` is ignored.
 
 ### Cursor overlay
 
-While an act runs you **will see a cursor overlay** on the page (default **on**): a gold pointer that **glides** (~240ms ease, not a teleport), a highlight on the Runtime box-model hit box, a click ripple at that point, a type chip near the caret only while text is in flight, and a **compact HUD** at the bottom-left (verb · tab title/host · Confirm pending vs acting). It stays above the page with `pointer-events: none` so it does not cover the composer or steal clicks. The side panel is a separate document and still receives clicks.
+While an act runs you **will see a cursor overlay** on the page (default **on**): a gold pointer that **glides** (~240ms) then **dwells ≥600ms before the click**, a 3–4px highlight, a click ripple, a type chip, a **Grok** pill (`chrome.action` badge on that tab plus a top-of-page chip; native tab-strip paint is not available), optional `Grok · ` title prefix, and a HUD at the bottom-left. Overlay injects into the acted-on tab’s top frame; **`LPC_OVERLAY_PING` must ack before CDP click/type**. Fail codes in the side panel: `OVERLAY_INJECT_FAILED`, `HOST_NOT_ALLOWED`, `EXTENSION_DISCONNECTED`, `WRONG_PROFILE`.
 
 Turn it off in the side panel: uncheck **Show cursor overlay (default on)**. Deny aborts and **clears the overlay**.
 
