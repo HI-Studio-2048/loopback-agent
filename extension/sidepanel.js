@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 
+const overlayStatus = $("overlay-status");
 const companionStatus = $("companion-status");
 const empty = $("empty");
 const preview = $("preview");
@@ -64,20 +65,49 @@ function hostOf(act) {
 }
 
 function actionName(act) {
-  if (act && act.status === "awaiting_gate" && act.gate && act.gate.name) return String(act.gate.name);
+  if (act && (act.status === "waiting_confirm" || act.status === "awaiting_gate") && act.gate && act.gate.name) {
+    return String(act.gate.name);
+  }
   if (act && act.status === "pending") return "start";
   return "";
 }
 
-function statusLabel(status) {
+const RUNTIME_CODES = [
+  "OVERLAY_INJECT_FAILED",
+  "HOST_NOT_ALLOWED",
+  "EXTENSION_DISCONNECTED",
+  "WRONG_PROFILE",
+  "CROSS_ACT_TAB",
+];
+
+function statusLabel(status, act, overlay) {
+  if (
+    overlay &&
+    overlay.attached === false &&
+    ["queued", "planning", "acting", "running", "confirmed"].includes(status)
+  ) {
+    return "Overlay missing — not acting. Not running.";
+  }
   switch (status) {
+    case "queued":
+      return "Queued. The extension will start. This is not running yet.";
     case "pending":
       return "Waiting for Confirm-to-start. Nothing gated has run.";
+    case "planning":
+      return "Planning steps. Gated controls still wait.";
     case "confirmed":
+    case "acting":
     case "running":
-      return "Running in this Chrome profile. Gated controls still wait.";
+      return "Acting in this Chrome profile. Gated controls still wait.";
+    case "waiting_confirm":
     case "awaiting_gate":
       return "Gated step. Confirm/Deny required — waiting is not a yes.";
+    case "waiting_user":
+      return "Waiting for a /v1/tool call. Not running.";
+    case "waiting_file_picker":
+      return "You pick the file in the highlighted picker. The agent did not set a file.";
+    case "ready_for_publish":
+      return "Ready for Publish/Save. That control was not clicked (noPublish).";
     case "completed":
       return "Finished without a gated click.";
     case "published":
@@ -94,7 +124,25 @@ function statusLabel(status) {
 }
 
 function needsDecision(act) {
-  return act && (act.status === "pending" || act.status === "awaiting_gate");
+  return act && (act.status === "pending" || act.status === "waiting_confirm" || act.status === "awaiting_gate");
+}
+
+let overlayAttached = { attached: null, error: null };
+
+function setOverlayBanner(state) {
+  if (!overlayStatus) return;
+  overlayAttached = state || overlayAttached;
+  if (overlayAttached.attached === true) {
+    overlayStatus.dataset.state = "attached";
+    overlayStatus.textContent = `Overlay: attached on tab ${overlayAttached.tabId || "this tab"} (LPC_OVERLAY_PING ack).`;
+  } else if (overlayAttached.attached === false) {
+    overlayStatus.dataset.state = "missing";
+    const code = overlayAttached.error ? ` ${overlayAttached.error}.` : "";
+    overlayStatus.textContent = `Overlay: missing — not attached.${code} Allow this site, then retry.`;
+  } else {
+    overlayStatus.dataset.state = "checking";
+    overlayStatus.textContent = "Overlay: waiting for LPC_OVERLAY_PING on the acted-on tab.";
+  }
 }
 
 function render(act) {
@@ -109,10 +157,15 @@ function render(act) {
   }
   empty.hidden = true;
   preview.hidden = false;
-  statusLine.dataset.kind = act.status || "pending";
-  statusLine.textContent = statusLabel(act.status);
+  statusLine.dataset.kind = act.status || "queued";
+  statusLine.textContent = statusLabel(act.status, act, overlayAttached);
   const step = act.step || act.progress;
-  if (step && (act.status === "running" || act.status === "confirmed" || act.status === "awaiting_gate")) {
+  if (
+    step &&
+    ["planning", "acting", "running", "confirmed", "waiting_confirm", "awaiting_gate", "waiting_user", "waiting_file_picker", "ready_for_publish"].includes(
+      act.status
+    )
+  ) {
     stepLine.hidden = false;
     stepLine.textContent = step;
   } else {
@@ -123,7 +176,7 @@ function render(act) {
   const origin = originOf(act) || "this origin";
   const host = hostOf(act) || origin;
   const action = actionName(act);
-  if (act.status === "awaiting_gate" && gate) {
+  if ((act.status === "waiting_confirm" || act.status === "awaiting_gate") && gate) {
     gateBox.hidden = false;
     $("gate-action").textContent = `Confirm “${gate.name || action || "gated action"}” on ${origin}.`;
     $("gate-preview").textContent =
@@ -160,17 +213,24 @@ function render(act) {
   } else {
     progressEl.hidden = true;
   }
-  if (act.error && act.error.message) {
+  if (act.error && (act.error.message || act.error.code)) {
     errorEl.hidden = false;
-    errorEl.textContent = act.error.message;
+    const code = act.error.code && RUNTIME_CODES.includes(act.error.code) ? `${act.error.code}: ` : "";
+    errorEl.textContent = `${code}${act.error.message || act.error.code}`;
   } else {
     errorEl.hidden = true;
   }
 
   const canDecide = needsDecision(act) && !busy;
   confirmBtn.disabled = !canDecide;
-  denyBtn.disabled = !(act && ["pending", "awaiting_gate", "confirmed", "running"].includes(act.status) && !busy);
-  if (act.status === "awaiting_gate") {
+  denyBtn.disabled = !(
+    act &&
+    ["pending", "waiting_confirm", "awaiting_gate", "confirmed", "queued", "planning", "acting", "running", "waiting_user", "waiting_file_picker", "ready_for_publish"].includes(
+      act.status
+    ) &&
+    !busy
+  );
+  if (act.status === "waiting_confirm" || act.status === "awaiting_gate") {
     confirmBtn.textContent = `Confirm ${action || "action"} on ${host}`;
     $("confirm-hint").textContent =
       `Confirm clicks “${action || "this gated control"}” on ${origin} once. Deny aborts and clears the overlay. Waiting does not confirm.`;
@@ -323,10 +383,14 @@ if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMess
 
   chrome.runtime.sendMessage({ type: "LPC_OVERLAY_GET" }).then((res) => {
     if (res && typeof res.enabled === "boolean") overlayToggle.checked = res.enabled;
+    if (res) setOverlayBanner(res);
   }).catch(() => {});
 
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || !message.type) return;
+    if (message.type === "LPC_OVERLAY_STATUS") {
+      setOverlayBanner(message);
+    }
     if (message.type === "LPC_ACT" || message.type === "LPC_GATE" || message.type === "LPC_PENDING") {
       render(message.act || message.request || null);
     }
