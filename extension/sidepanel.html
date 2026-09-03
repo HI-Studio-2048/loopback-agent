@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loopback Agent</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header>
+      <p class="kicker">127.0.0.1 · gated Confirm</p>
+      <h1>Loopback Agent</h1>
+    </header>
+
+    <section id="companion-status" class="banner" data-state="checking">
+      Checking the local companion…
+    </section>
+
+    <section class="card" id="perms-card">
+      <h2>Site access</h2>
+      <p class="hint" id="tab-access">Focus an http(s) tab, then Allow this site. Unknown hosts are never granted silently.</p>
+      <p class="hint" id="perm-list">Default: companion on 127.0.0.1 only.</p>
+      <ul id="origin-list" class="origin-list"></ul>
+      <div class="actions">
+        <button type="button" id="allow-site" class="ghost">Allow this site</button>
+        <button type="button" id="revoke-site" class="ghost">Revoke this site</button>
+        <button type="button" id="allow-all" class="ghost">Allow all sites</button>
+      </div>
+      <p class="fineprint">
+        Grants are origin-scoped. Publish, Post, Send, Pay, Delete, and Share still stop for Confirm on an allowed host.
+        “Allow all sites” is optional <code>&lt;all_urls&gt;</code> — never a silent default.
+      </p>
+      <label class="toggle">
+        <input type="checkbox" id="overlay-toggle" checked />
+        Show cursor overlay (default on)
+      </label>
+    </section>
+
+    <section id="empty" class="card" hidden>
+      <h2>No active act</h2>
+      <p>
+        Queue one act with <code>POST /v1/act</code>. Publish, Post, Send, Pay, Delete, and Share always stop for Confirm.
+        Waiting does not confirm.
+      </p>
+    </section>
+
+    <section id="preview" class="card" hidden>
+      <p id="status-line" class="status"></p>
+      <p id="step-line" class="step" hidden></p>
+      <div id="gate-box" class="gate" hidden>
+        <p id="gate-action"></p>
+        <p id="gate-preview"></p>
+      </div>
+      <dl>
+        <div id="intent-row">
+          <dt>Intent</dt>
+          <dd id="field-intent" class="pre"></dd>
+        </div>
+        <div id="url-row">
+          <dt>Start URL</dt>
+          <dd id="field-url"></dd>
+        </div>
+        <div id="platform-row">
+          <dt>Platform</dt>
+          <dd id="field-platform"></dd>
+        </div>
+        <div id="title-row">
+          <dt>Title</dt>
+          <dd id="field-title"></dd>
+        </div>
+        <div id="caption-row">
+          <dt>Caption / description</dt>
+          <dd id="field-caption" class="pre"></dd>
+        </div>
+        <div id="media-row">
+          <dt>Media path</dt>
+          <dd>
+            <code id="field-media"></code>
+            <p class="hint">
+              The agent sets the file only after a successful intercepted chooser. You pick in the highlighted picker
+              only if attachFile returns <code>file_chooser_user_pick</code>.
+            </p>
+          </dd>
+        </div>
+        <div id="snap-row" hidden>
+          <dt>Snapshot</dt>
+          <dd id="field-snap"></dd>
+        </div>
+      </dl>
+      <p id="progress" class="progress" hidden></p>
+      <p id="error" class="error" hidden></p>
+      <div class="actions">
+        <button type="button" id="confirm" class="primary">Confirm</button>
+        <button type="button" id="deny" class="ghost">Deny</button>
+      </div>
+      <p class="fineprint" id="confirm-hint">
+        Confirm and Deny are required. There is no auto-approve and waiting is not a yes.
+        Deny aborts and clears the overlay.
+      </p>
+    </section>
+
+    <p id="panel-fail" class="error" hidden>
+      Side panel failed to render. Gated actions will not run. Reload the Loopback Agent side panel.
+    </p>
+
+    <footer>
+      <p>Loopback only. Never deploy the companion. Snapshots stay on this machine.</p>
+    </footer>
+    <script src="config.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
