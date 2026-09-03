@@ -1,0 +1,16 @@
+node_modules/
+.env
+.env.*
+!.env.example
+
+# Never commit browser sessions or secrets
+cookies
+cookies.txt
+*cookies*
+*cookie-jar*
+*.session
+*session*dump*
+chrome-profile/
+user-data-dir/
+*.pem
+*.key

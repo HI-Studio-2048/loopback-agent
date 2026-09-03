@@ -1,0 +1,15 @@
+{
+  "name": "loopback-post",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Loopback companion + Chrome MV3 agent. One act at a time; Publish/Send/Pay/Delete/Share wait for Confirm.",
+  "license": "MIT",
+  "scripts": {
+    "companion": "node companion/server.js",
+    "start": "node companion/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
