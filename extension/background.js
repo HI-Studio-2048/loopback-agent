@@ -26,6 +26,7 @@ async function companion(path, options = {}) {
   const res = await fetch(`${COMPANION}${path}`, {
     ...options,
     headers: {
+      "X-Loopback-Extension": "1",
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
@@ -34,9 +35,41 @@ async function companion(path, options = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
+let badgeTabId = null;
+let lastOverlayState = { attached: false, tabId: null, error: null };
+
+function clearActingBadge() {
+  if (badgeTabId) {
+    chrome.action.setBadgeText({ text: "", tabId: badgeTabId });
+  }
+  chrome.action.setBadgeText({ text: "" });
+  badgeTabId = null;
+}
+
+function setActingBadge(tabId) {
+  if (badgeTabId && badgeTabId !== tabId) {
+    chrome.action.setBadgeText({ text: "", tabId: badgeTabId });
+  }
+  badgeTabId = tabId || null;
+  if (!tabId) {
+    chrome.action.setBadgeText({ text: "" });
+    return;
+  }
+  chrome.action.setBadgeText({ text: "Grok", tabId });
+  chrome.action.setBadgeBackgroundColor({ color: "#e08a1e", tabId });
+}
+
 function setBadge(text, color) {
-  chrome.action.setBadgeText({ text: text || "" });
-  if (color) chrome.action.setBadgeBackgroundColor({ color });
+  if (!text) {
+    clearActingBadge();
+    return;
+  }
+  if (lastTabId) {
+    setActingBadge(lastTabId);
+    return;
+  }
+  chrome.action.setBadgeText({ text: text === "Grok" || text === "…" || text === "1" ? "Grok" : text });
+  if (color) chrome.action.setBadgeBackgroundColor({ color: color || "#e08a1e" });
 }
 
 function notifyViews(message) {
@@ -82,6 +115,7 @@ async function overlayHudMeta(tabId, extra = {}) {
 async function overlayShow(tabId, step, extra = {}) {
   lastTabId = tabId;
   currentStep = step || currentStep;
+  if (tabId) setActingBadge(tabId);
   if (!overlayEnabled) {
     await overlayMsg(tabId, { type: "LPC_OVERLAY_HIDE" });
     return;
@@ -111,6 +145,7 @@ async function overlayYouPick(tabId, rect) {
 async function overlayHide(tabId) {
   const id = tabId || lastTabId;
   if (id) await overlayMsg(id, { type: "LPC_OVERLAY_HIDE" });
+  clearActingBadge();
 }
 
 async function setStep(id, step, tabId, extra = {}) {
@@ -181,6 +216,72 @@ function waitForTabComplete(tabId, timeoutMs = 30000) {
   });
 }
 
+async function pingOverlay(tabId) {
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { type: "LPC_OVERLAY_PING" });
+    return Boolean(res && res.ok && res.overlay);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOverlayAcked(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || !tab.url || !(await hasOriginAccess(tab.url))) {
+    lastOverlayState = { attached: false, tabId, error: "HOST_NOT_ALLOWED" };
+    notifyViews({ type: "LPC_OVERLAY_STATUS", ...lastOverlayState });
+    return {
+      ok: false,
+      error: "HOST_NOT_ALLOWED",
+      message: "Allow this site first — overlay not on this tab.",
+    };
+  }
+  if (await pingOverlay(tabId)) {
+    lastOverlayState = { attached: true, tabId, error: null };
+    notifyViews({ type: "LPC_OVERLAY_STATUS", ...lastOverlayState });
+    return { ok: true };
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: false },
+      files: ["content/overlay.js"],
+      injectImmediately: true,
+    });
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    const hostFail = /Cannot access|permission|Extension manifest/i.test(msg);
+    lastOverlayState = {
+      attached: false,
+      tabId,
+      error: hostFail ? "HOST_NOT_ALLOWED" : "OVERLAY_INJECT_FAILED",
+    };
+    notifyViews({ type: "LPC_OVERLAY_STATUS", ...lastOverlayState });
+    return {
+      ok: false,
+      error: lastOverlayState.error,
+      message: hostFail
+        ? "Allow this site first — overlay not on this tab."
+        : `Overlay did not inject (${msg}). ${tab.title || ""} ${tab.url}`,
+    };
+  }
+  const deadline = Date.now() + 500;
+  while (Date.now() < deadline) {
+    if (await pingOverlay(tabId)) {
+      lastOverlayState = { attached: true, tabId, error: null };
+      notifyViews({ type: "LPC_OVERLAY_STATUS", ...lastOverlayState });
+      return { ok: true };
+    }
+    await sleep(40);
+  }
+  lastOverlayState = { attached: false, tabId, error: "OVERLAY_INJECT_FAILED" };
+  notifyViews({ type: "LPC_OVERLAY_STATUS", ...lastOverlayState });
+  return {
+    ok: false,
+    error: "OVERLAY_INJECT_FAILED",
+    message: `No LPC_OVERLAY_PING ack after inject — ${tab.title || ""} ${tab.url}`,
+  };
+}
+
 async function ensureInjected(tabId) {
   try {
     const ping = await chrome.tabs.sendMessage(tabId, { type: "LPC_PING" });
@@ -217,6 +318,48 @@ async function sendTab(tabId, message, attempts = 6) {
     }
   }
   throw lastErr || new Error("Content script did not answer.");
+}
+
+async function openDedicatedActTab(url, act) {
+  const forbidden = new Set((act && act.forbiddenTabIds) || []);
+  if (act && act.tabId && !forbidden.has(act.tabId)) {
+    try {
+      await chrome.tabs.get(act.tabId);
+      await chrome.tabs.update(act.tabId, { url, active: true });
+      await waitForTabComplete(act.tabId);
+      await cdpSwitchTab(lastTabId, act.tabId);
+      lastTabId = act.tabId;
+      return act.tabId;
+    } catch {
+      /* tab gone */
+    }
+  }
+  const tab = await chrome.tabs.create({ url, active: true });
+  await waitForTabComplete(tab.id);
+  await cdpSwitchTab(lastTabId, tab.id);
+  lastTabId = tab.id;
+  if (act && act.id) {
+    await companion("/v1/progress", {
+      method: "POST",
+      body: JSON.stringify({ id: act.id, tabId: tab.id, planStep: "open_studio", step: "open_studio" }),
+    });
+  }
+  return tab.id;
+}
+
+async function openUrlForAct(url, act) {
+  const forbidden = new Set((act && act.forbiddenTabIds) || []);
+  if (act && (act.newTab || act.planKind === "youtube_upload" || (act.plan && act.plan.kind === "youtube_upload"))) {
+    return openDedicatedActTab(url, act);
+  }
+  const current = await activeTab();
+  if (current && current.id && forbidden.has(current.id)) {
+    return openDedicatedActTab(url, act);
+  }
+  if (act && act.tabId && !forbidden.has(act.tabId)) {
+    return openDedicatedActTab(url, { ...act, newTab: false });
+  }
+  return openUrl(url);
 }
 
 async function openUrl(url) {
@@ -298,70 +441,168 @@ async function snapshotTab(tabId, id) {
 }
 
 async function runFill(act) {
+  const youtubeUpload =
+    (act.plan && act.plan.kind === "youtube_upload") ||
+    (act.platform === "youtube" && (act.mediaPath || /upload/i.test(String(act.intent || ""))));
   if (
     !act.platform &&
     act.startUrl &&
-    /youtube\.com|studio\.youtube\.com/i.test(act.startUrl) &&
-    (act.fillTitle || act.fillDescription || act.noPublish)
+    /youtube\.com|studio\.youtube\.com/i.test(act.startUrl)
   ) {
-    act = {
-      ...act,
-      platform: "youtube",
-      startUrl: /upload/i.test(act.startUrl) ? act.startUrl : "https://www.youtube.com/upload",
-    };
+    act = { ...act, platform: "youtube" };
   }
-  if (!act.platform && act.startUrl && /instagram\.com/i.test(act.startUrl) && (act.fillDescription || act.caption)) {
+  if (!act.platform && act.startUrl && /instagram\.com/i.test(act.startUrl)) {
     act = { ...act, platform: "instagram" };
   }
-  const url = act.startUrl;
+
+  await companion("/v1/progress", {
+    method: "POST",
+    body: JSON.stringify({
+      id: act.id,
+      status: "planning",
+      step: "planning",
+      message: youtubeUpload
+        ? "Planning YouTube upload (Studio tab, attach, details, audience, visibility)."
+        : "Planning the act.",
+    }),
+  });
+
+  const url = act.startUrl || (youtubeUpload ? "https://studio.youtube.com" : null);
   if (url && !(await hasOriginAccess(url))) {
     await reportResult(
       act.id,
       "failed",
-      "needs_permission",
-      `Allow access to ${new URL(url).origin} in the side panel, then queue the act again.`
+      "HOST_NOT_ALLOWED",
+      `Allow this site first — overlay not on this tab. (${new URL(url).origin})`
     );
     return;
   }
-  const tabId = url ? await openUrl(url) : (await activeTab())?.id;
+
+  await companion("/v1/progress", {
+    method: "POST",
+    body: JSON.stringify({ id: act.id, status: "acting", step: "open_studio", planStep: "open_studio" }),
+  });
+
+  const forbidden = new Set((act.forbiddenTabIds || []).map(Number));
+  let tabId;
+  if (url) {
+    tabId = await openUrlForAct(url, act);
+  } else {
+    const current = await activeTab();
+    if (act.newTab || (current && forbidden.has(current.id))) {
+      const tab = await chrome.tabs.create({ active: true });
+      tabId = tab.id;
+      lastTabId = tabId;
+      await companion("/v1/progress", {
+        method: "POST",
+        body: JSON.stringify({ id: act.id, tabId, status: "acting", step: "new_tab" }),
+      });
+    } else {
+      tabId = current && current.id;
+    }
+  }
   if (!tabId) {
     await reportResult(act.id, "failed", "ui_missing", "No tab to operate on.");
     return;
   }
-  await setStep(act.id, "Navigate", tabId);
+  lastTabId = tabId;
+  await companion("/v1/progress", {
+    method: "POST",
+    body: JSON.stringify({ id: act.id, tabId, step: "wait_load", planStep: "wait_load", status: "acting" }),
+  });
+  await setStep(act.id, youtubeUpload ? "YouTube: wait_load" : "Navigate", tabId);
+  await waitForTabComplete(tabId).catch(() => {});
+  await cdpWaitLoad(tabId, 15000).catch(() => {});
+
+  const overlay = await ensureOverlayAcked(tabId);
+  if (!overlay.ok) {
+    await reportResult(act.id, "failed", overlay.error, overlay.message);
+    return;
+  }
+  await companion("/v1/progress", {
+    method: "POST",
+    body: JSON.stringify({ id: act.id, planStep: "overlay_ping", step: "overlay_ping", status: "acting" }),
+  });
+
   const inj = await ensureInjected(tabId);
   if (!inj.ok) {
     await reportResult(act.id, "failed", inj.error, inj.message);
     return;
   }
-  await overlayShow(tabId, "Running");
+  await overlayShow(tabId, youtubeUpload ? "YouTube upload" : "Acting");
   await cdpAttachRetry(tabId, 2);
 
   if (act.platform === "youtube" || act.platform === "instagram") {
-    await setStep(act.id, "Fill composer", tabId);
+    await setStep(act.id, youtubeUpload ? "YouTube: fill composer" : "Fill composer", tabId);
     const result = await sendTab(tabId, {
       type: "LPC_FILL",
-      request: { ...act, noPublish: act.noPublish },
+      request: {
+        ...act,
+        title: act.title || act.fillTitle,
+        description: act.description || act.fillDescription || act.caption,
+        caption: act.description || act.caption,
+        noPublish: act.noPublish,
+      },
     });
     if (result && result.gate) {
       await postGate(act.id, result.gate);
-      setBadge("!", "#c48a12");
-      notifyViews({ type: "LPC_GATE", act: { ...act, status: "awaiting_gate", gate: result.gate } });
+      setActingBadge(tabId);
+      notifyViews({
+        type: "LPC_GATE",
+        act: { ...act, status: "waiting_confirm", gate: result.gate, tabId },
+      });
       return;
     }
-    if (result && result.completed) {
+    if (result && (result.status === "ready_for_publish" || (result.ok && youtubeUpload && act.noPublish && !result.gate))) {
+      await companion("/v1/result", {
+        method: "POST",
+        body: JSON.stringify({
+          id: act.id,
+          status: "ready_for_publish",
+          message:
+            result.message ||
+            "YouTube upload is filled. Publish/Save was not clicked (noPublish=true).",
+        }),
+      });
+      await overlayShow(tabId, "Ready — not published", { phase: "acting", verb: "Ready" });
+      notifyViews({ type: "LPC_ACT", act: { ...act, status: "ready_for_publish", tabId } });
+      return;
+    }
+    if (result && result.status === "waiting_file_picker") {
+      await companion("/v1/progress", {
+        method: "POST",
+        body: JSON.stringify({
+          id: act.id,
+          status: "waiting_file_picker",
+          step: result.message,
+          message: result.message,
+        }),
+      });
+      return;
+    }
+    if (result && result.completed && !youtubeUpload) {
       await reportResult(act.id, "completed", null, result.message || "Finished without a gated click.");
-      setBadge("");
       return;
     }
     if (!result || result.ok === false) {
+      const err = (result && result.error) || "ui_missing";
+      if (err === "file_chooser_user_pick") {
+        await companion("/v1/progress", {
+          method: "POST",
+          body: JSON.stringify({
+            id: act.id,
+            status: "waiting_file_picker",
+            message: (result && result.message) || "You pick the file in the highlighted picker.",
+          }),
+        });
+        return;
+      }
       await reportResult(
         act.id,
         "failed",
-        (result && result.error) || "ui_missing",
+        err,
         (result && result.message) || "Composer step failed. Fail closed."
       );
-      setBadge("!", "#8b2e2e");
       return;
     }
   }
@@ -372,56 +613,38 @@ async function runFill(act) {
     return;
   }
 
-  const titleVal = act.fillTitle || act.title;
-  const descVal = act.fillDescription || act.caption;
-  if (titleVal || descVal) {
-    const match = await sendTab(tabId, { type: "LPC_MATCH_FILL" });
-    if (titleVal && match && match.title) {
-      const typed = await sendTab(tabId, {
-        type: "LPC_TYPE",
-        ref: match.title.ref,
-        text: titleVal,
-      });
-      if (!typed || typed.ok === false) {
-        await reportResult(act.id, "failed", "ui_missing", "Could not fill the title field. Fail closed.");
-        return;
-      }
-    } else if (titleVal) {
-      await reportResult(act.id, "failed", "ui_missing", "Title field was not found. Fail closed.");
-      return;
-    }
-    if (descVal && match && match.description) {
-      const typed = await sendTab(tabId, {
-        type: "LPC_TYPE",
-        ref: match.description.ref,
-        text: descVal,
-      });
-      if (!typed || typed.ok === false) {
-        await reportResult(act.id, "failed", "ui_missing", "Could not fill the description field. Fail closed.");
-        return;
-      }
-    }
-  }
-
-  await snapshotTab(tabId, act.id);
-
-  if (act.noPublish) {
-    await reportResult(act.id, "completed", null, "Finished without clicking Publish/Send/Pay/Delete/Share.");
-    setBadge("");
-    return;
-  }
-
-  if (act.kind === "act" && !act.platform) {
-    await reportProgress(
+  if (youtubeUpload) {
+    await reportResult(
       act.id,
-      "Ready. Use POST /v1/tool for more steps. Publish/Send/Pay/Delete/Share still require Confirm."
+      "failed",
+      "ui_missing",
+      "YouTube upload plan did not reach ready_for_publish or Confirm. Fail closed."
     );
     return;
   }
+
+  if (act.noPublish && (act.platform === "instagram" || act.fillTitle || act.fillDescription)) {
+    await reportResult(act.id, "completed", null, "Finished without clicking Publish/Send/Pay/Delete/Share.");
+    return;
+  }
+
+  await companion("/v1/progress", {
+    method: "POST",
+    body: JSON.stringify({
+      id: act.id,
+      status: "waiting_user",
+      step: "waiting_user",
+      message:
+        "Waiting for a /v1/tool call (include this act id and tabId). Not running. Next: snapshot, click, type, navigate, or attachFile. Publish/Send/Pay/Delete/Share still require Confirm.",
+    }),
+  });
+  await overlayShow(tabId, "Waiting for tool", { phase: "acting", verb: "Waiting" });
 }
 
 async function clickViaCdpOrDom(tabId, args, act) {
   const requireCdp = Boolean(args.requireCdp);
+  const overlay = await ensureOverlayAcked(tabId);
+  if (!overlay.ok) return overlay;
   await ensureInjected(tabId);
   let dbg = await cdpAttachRetry(tabId, 2);
   if (requireCdp && !dbg.ok) {
@@ -505,6 +728,8 @@ async function clickViaCdpOrDom(tabId, args, act) {
 }
 
 async function typeViaCdpOrDom(tabId, args) {
+  const overlay = await ensureOverlayAcked(tabId);
+  if (!overlay.ok) return overlay;
   await ensureInjected(tabId);
   const dbg = await cdpAttachRetry(tabId, 2);
   const press = args.key || args.press || (args.submit ? "Enter" : null);
@@ -537,20 +762,25 @@ async function typeViaCdpOrDom(tabId, args) {
 }
 
 async function clickGated(act) {
-  const tab = await activeTab();
-  if (!tab || !tab.id) {
+  const tabId = act.tabId || (await activeTab())?.id;
+  if (!tabId) {
     await reportResult(act.id, "failed", "ui_missing", "No active tab for the gated click.");
     return;
   }
-  const inj = await ensureInjected(tab.id);
+  const overlay = await ensureOverlayAcked(tabId);
+  if (!overlay.ok) {
+    await reportResult(act.id, "failed", overlay.error, overlay.message);
+    return;
+  }
+  const inj = await ensureInjected(tabId);
   if (!inj.ok) {
     await reportResult(act.id, "failed", inj.error, inj.message);
     return;
   }
-  lastTabId = tab.id;
+  lastTabId = tabId;
   const gate = act.gate || {};
   const result = await clickViaCdpOrDom(
-    tab.id,
+    tabId,
     {
       selector: gate.selector,
       name: gate.name || (act.platform === "instagram" ? "Share" : "Publish"),
@@ -576,6 +806,26 @@ async function runTool(act) {
   const cmd = act.command;
   if (!cmd || cmd.status !== "queued") return;
   let tab = await activeTab();
+  if (act.tabId) {
+    try {
+      tab = await chrome.tabs.get(act.tabId);
+    } catch {
+      /* owned tab may be gone */
+    }
+  }
+  const forbidden = new Set((act.forbiddenTabIds || []).map(Number));
+  const requested = cmd.args && cmd.args.tabId != null ? Number(cmd.args.tabId) : null;
+  if (requested != null && (forbidden.has(requested) || (act.tabId && requested !== Number(act.tabId)))) {
+    await companion("/v1/tool-result", {
+      method: "POST",
+      body: JSON.stringify({ id: act.id, ok: false, error: "CROSS_ACT_TAB" }),
+    });
+    await reportProgress(act.id, "That tab belongs to another act. Cross-act hijack rejected.");
+    return;
+  }
+  if (tab && forbidden.has(tab.id)) {
+    tab = null;
+  }
   try {
     if (cmd.tool === "navigate" || cmd.tool === "tabs.create" || cmd.tool === "tabs.update") {
       const url = cmd.args && cmd.args.url;
@@ -831,20 +1081,48 @@ async function tick() {
       lastActId = act.id;
       lastStatus = act.status;
       notifyViews({ type: "LPC_ACT", act });
-      if (act.status === "pending" || act.status === "awaiting_gate") setBadge("1", "#c48a12");
-      else if (act.status === "running" || act.status === "confirmed") setBadge("…", "#3d6f4a");
+      if (act.tabId) lastTabId = act.tabId;
+      if (
+        act.status === "pending" ||
+        act.status === "waiting_confirm" ||
+        act.status === "awaiting_gate"
+      ) {
+        if (act.tabId) setActingBadge(act.tabId);
+      } else if (
+        act.status === "queued" ||
+        act.status === "planning" ||
+        act.status === "acting" ||
+        act.status === "running" ||
+        act.status === "confirmed"
+      ) {
+        if (act.tabId) setActingBadge(act.tabId);
+      }
     }
 
+    const parked = [
+      "waiting_confirm",
+      "awaiting_gate",
+      "waiting_user",
+      "waiting_file_picker",
+      "ready_for_publish",
+    ];
     if (act.status === "pending") return;
 
-    if (act.status === "awaiting_gate") {
-      if (lastTabId) {
-        overlayShow(lastTabId, act.step || `Confirm ${act.gate && act.gate.name}`, {
-          phase: "confirm",
-          verb: "Confirm",
-        });
+    if (parked.includes(act.status)) {
+      if (act.tabId || lastTabId) {
+        const tid = act.tabId || lastTabId;
+        if (act.status === "waiting_confirm" || act.status === "awaiting_gate") {
+          overlayShow(tid, act.step || `Confirm ${act.gate && act.gate.name}`, {
+            phase: "confirm",
+            verb: "Confirm",
+          });
+        } else if (act.status === "ready_for_publish") {
+          overlayShow(tid, "Ready — not published", { phase: "acting", verb: "Ready" });
+        } else if (act.status === "waiting_file_picker") {
+          overlayShow(tid, "You pick", { youPick: true, verb: "You pick", phase: "pick" });
+        }
       }
-      return;
+      if (!(act.command && act.command.status === "queued")) return;
     }
 
     if (act.command && act.command.status === "queued") {
@@ -857,17 +1135,7 @@ async function tick() {
       return;
     }
 
-    if (act.status === "confirmed") {
-      const key = `fill:${act.id}`;
-      if (startedKeys.has(key)) return;
-      startedKeys.add(key);
-      busy = true;
-      await runFill(act);
-      busy = false;
-      return;
-    }
-
-    if (act.status === "running" && act.allowGatedOnce && act.gate) {
+    if ((act.status === "acting" || act.status === "running") && act.allowGatedOnce && act.gate) {
       const key = `gate:${act.id}`;
       if (startedKeys.has(key)) return;
       startedKeys.add(key);
@@ -877,7 +1145,7 @@ async function tick() {
       return;
     }
 
-    if (act.status === "running" && act.kind === "act" && !act.command) {
+    if (["queued", "confirmed", "planning", "acting", "running"].includes(act.status) && !act.command) {
       const key = `fill:${act.id}`;
       if (startedKeys.has(key)) return;
       startedKeys.add(key);
@@ -1089,9 +1357,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message.type === "LPC_OVERLAY_GET") {
-    sendResponse({ enabled: overlayEnabled, step: currentStep });
+    sendResponse({
+      enabled: overlayEnabled,
+      step: currentStep,
+      attached: lastOverlayState.attached,
+      tabId: lastOverlayState.tabId,
+      error: lastOverlayState.error,
+    });
     return;
   }
+  if (message.type === "LPC_PLAN_STEP") {
+    currentStep = message.message || message.planStep || currentStep;
+    notifyViews({ type: "LPC_STEP", step: currentStep, message: currentStep, planStep: message.planStep });
+    if (lastActId) {
+      companion("/v1/progress", {
+        method: "POST",
+        body: JSON.stringify({
+          id: message.id || lastActId,
+          step: currentStep,
+          message: currentStep,
+          planStep: message.planStep,
+          status: "acting",
+        }),
+      });
+    }
+  }
+});
+
+chrome.tabs.onActivated.addListener((info) => {
+  if (!lastTabId) return;
+  if (info.tabId === lastTabId && lastActId) setActingBadge(lastTabId);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
