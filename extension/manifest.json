@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Loopback Agent",
+  "version": "1.2.0",
+  "description": "Local loopback agent for this Chrome profile. Publish/Send/Pay/Delete/Share wait for Confirm in the side panel.",
+  "permissions": ["sidePanel", "activeTab", "scripting", "debugger", "storage"],
+  "host_permissions": ["http://127.0.0.1:18741/*"],
+  "optional_permissions": ["tabs"],
+  "optional_host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Loopback Agent",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
