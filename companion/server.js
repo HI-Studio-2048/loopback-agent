@@ -12,7 +12,6 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
-  BLOCKING_STATUSES,
   ERRORS,
   DEFAULT_PORT,
   DEFAULT_HOST,
@@ -23,7 +22,12 @@ const {
   publicRequest,
   publicAct,
   postRequestToAct,
+  isYoutubeUpload,
+  isBusyStatus,
+  isParkedStatus,
+  isLiveStatus,
 } = require("../shared/schema");
+const { buildYoutubeUploadPlan } = require("../shared/youtube-plan");
 
 const HOST = DEFAULT_HOST;
 const PORT = Number.parseInt(process.env.PORT || String(DEFAULT_PORT), 10);
@@ -58,17 +62,80 @@ function expireIfNeeded(req) {
   return req;
 }
 
-function getActive() {
-  if (!activeId) return null;
-  const req = expireIfNeeded(requests.get(activeId));
-  if (!req || !BLOCKING_STATUSES.includes(req.status)) {
-    if (req && activeId === req.id && !BLOCKING_STATUSES.includes(req.status)) {
-      activeId = null;
-    }
-    if (!req) activeId = null;
-    return null;
+function listLive() {
+  const live = [];
+  for (const rec of requests.values()) {
+    expireIfNeeded(rec);
+    if (isLiveStatus(rec.status)) live.push(rec);
   }
-  return req;
+  return live;
+}
+
+function listBusy() {
+  return listLive().filter((r) => isBusyStatus(r.status));
+}
+
+function listParked() {
+  return listLive().filter((r) => isParkedStatus(r.status));
+}
+
+function getWork() {
+  const busy = listBusy();
+  if (busy.length) return busy[0];
+  const needsTool = listParked().find((r) => r.command && r.command.status === "queued");
+  if (needsTool) return needsTool;
+  const gated = listParked().find((r) => r.allowGatedOnce && r.gate);
+  if (gated) return gated;
+  return null;
+}
+
+function getPanelAct() {
+  return getWork() || listParked()[0] || null;
+}
+
+function getActive() {
+  const panel = getPanelAct();
+  if (panel) {
+    activeId = panel.id;
+    return panel;
+  }
+  activeId = null;
+  return null;
+}
+
+function actOwnsTab(tabId) {
+  if (tabId == null) return null;
+  const n = Number(tabId);
+  return listLive().find((r) => r.tabId != null && Number(r.tabId) === n) || null;
+}
+
+function decideQueue(value) {
+  const busy = listBusy();
+  if (busy.length) {
+    return { error: ERRORS.already_pending, existing: busy[0] };
+  }
+  const parked = listParked();
+  const parkedUploads = parked.filter((r) => r.planKind === "youtube_upload");
+  const isUpload = isYoutubeUpload(value);
+  if (isUpload && (parkedUploads.length || parked.length)) {
+    return { error: ERRORS.already_pending, existing: parkedUploads[0] || parked[0] };
+  }
+  if (!isUpload && parkedUploads.length) {
+    const upload = parkedUploads[0];
+    if (!upload.tabId) {
+      return { error: ERRORS.already_pending, existing: upload };
+    }
+    return { ok: true, newTab: true, forbiddenTabIds: [upload.tabId] };
+  }
+  if (!isUpload && parked.length) {
+    const other = parked[0];
+    return {
+      ok: true,
+      newTab: true,
+      forbiddenTabIds: other.tabId ? [other.tabId] : [],
+    };
+  }
+  return { ok: true, newTab: isUpload };
 }
 
 function logLine(event, id, kind, status) {
@@ -100,7 +167,7 @@ function setCors(req, res) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Loopback-Extension");
   }
 }
 
@@ -171,25 +238,34 @@ function resolveById(id) {
 }
 
 function payload(rec) {
-  return { request: publicRequest(rec), act: publicAct(rec) };
+  return {
+    request: publicRequest(rec),
+    act: publicAct(rec),
+    acts: listLive().map(publicAct),
+  };
 }
 
 function queueAct(fields, created = now()) {
+  const youtubeUpload = isYoutubeUpload(fields);
+  const plan = youtubeUpload ? buildYoutubeUploadPlan(fields) : fields.plan || null;
   const rec = {
     id: newId("act"),
     kind: fields.kind || "act",
     platform: fields.platform || null,
     caption: fields.caption || "",
     title: fields.title || null,
+    description: fields.description || null,
     tags: fields.tags || [],
     mediaPath: fields.mediaPath || null,
+    visibility: fields.visibility || (plan && plan.visibility) || null,
+    audience: fields.audience || (plan && plan.audience) || null,
     intent: fields.intent,
-    startUrl: fields.startUrl || null,
+    startUrl: fields.startUrl || (plan && plan.studioUrl) || null,
     confirmToStart: Boolean(fields.confirmToStart),
     noPublish: Boolean(fields.noPublish),
-    fillTitle: fields.fillTitle || null,
-    fillDescription: fields.fillDescription || null,
-    status: fields.confirmToStart ? "pending" : "running",
+    fillTitle: fields.fillTitle || fields.title || null,
+    fillDescription: fields.fillDescription || fields.description || null,
+    status: fields.confirmToStart ? "pending" : "queued",
     gate: null,
     allowGatedOnce: false,
     command: null,
@@ -198,11 +274,19 @@ function queueAct(fields, created = now()) {
     ax: null,
     axCount: 0,
     screenshot: null,
-    step: null,
+    step: youtubeUpload ? "queued" : null,
+    plan,
+    planKind: plan ? plan.kind : null,
+    planStep: null,
+    tabId: null,
+    newTab: Boolean(fields.newTab) || youtubeUpload,
+    forbiddenTabIds: Array.isArray(fields.forbiddenTabIds) ? fields.forbiddenTabIds : [],
     error: null,
     progress: fields.confirmToStart
       ? "Waiting for Confirm-to-start in the Chrome side panel."
-      : "Queued. The extension will run the intent. Publish/Send/Pay/Delete/Share still require Confirm.",
+      : youtubeUpload
+        ? "Queued YouTube upload plan. The extension will open a dedicated Studio tab. Publish/Save is not clicked."
+        : "Queued. The extension will start. This is not running until the first step begins.",
     createdAt: created,
     updatedAt: created,
     expiresAt: created + ttlMs(),
@@ -316,12 +400,20 @@ async function handle(req, res) {
       sendError(req, res, parsed.error);
       return;
     }
-    const existing = getActive();
-    if (existing) {
-      sendError(req, res, ERRORS.already_pending, { pendingId: existing.id, status: existing.status });
+    const fields = postRequestToAct(parsed.value);
+    const decision = decideQueue(fields);
+    if (decision.error) {
+      sendError(req, res, ERRORS.already_pending, {
+        pendingId: decision.existing.id,
+        status: decision.existing.status,
+      });
       return;
     }
-    const rec = queueAct(postRequestToAct(parsed.value));
+    const rec = queueAct({
+      ...fields,
+      newTab: decision.newTab,
+      forbiddenTabIds: decision.forbiddenTabIds,
+    });
     send(req, res, 201, {
       id: rec.id,
       status: rec.status,
@@ -341,12 +433,20 @@ async function handle(req, res) {
       sendError(req, res, parsed.error);
       return;
     }
-    const existing = getActive();
-    if (existing) {
-      sendError(req, res, ERRORS.already_pending, { pendingId: existing.id, status: existing.status });
+    const decision = decideQueue(parsed.value);
+    if (decision.error) {
+      sendError(req, res, ERRORS.already_pending, {
+        pendingId: decision.existing.id,
+        status: decision.existing.status,
+      });
       return;
     }
-    const rec = queueAct({ kind: "act", ...parsed.value });
+    const rec = queueAct({
+      kind: "act",
+      ...parsed.value,
+      newTab: decision.newTab,
+      forbiddenTabIds: decision.forbiddenTabIds,
+    });
     send(req, res, 201, {
       id: rec.id,
       status: rec.status,
@@ -386,8 +486,8 @@ async function handle(req, res) {
       send(req, res, 200, payload(rec));
       return;
     }
-    if (rec.status === "awaiting_gate") {
-      rec.status = "running";
+    if (rec.status === "waiting_confirm" || rec.status === "awaiting_gate") {
+      rec.status = "acting";
       rec.allowGatedOnce = true;
       rec.progress = "Gated step confirmed. The extension will click that control once.";
       rec.updatedAt = now();
@@ -404,7 +504,7 @@ async function handle(req, res) {
     const body = await parseJson(req, res, { optional: true });
     if (body === null) return;
     const rec = body.id ? resolveById(body.id) : getActive();
-    if (!rec || !BLOCKING_STATUSES.includes(rec.status)) {
+    if (!rec || !isLiveStatus(rec.status)) {
       sendError(req, res, rec && rec.status === "expired" ? ERRORS.expired : ERRORS.no_pending);
       return;
     }
@@ -430,7 +530,30 @@ async function handle(req, res) {
       rec.progress = rec.step;
       rec.updatedAt = now();
     }
-    if (rec.status === "confirmed") rec.status = "running";
+    if (typeof body.planStep === "string") {
+      rec.planStep = body.planStep.slice(0, 80);
+      rec.updatedAt = now();
+    }
+    if (body.tabId != null && Number.isFinite(Number(body.tabId))) {
+      rec.tabId = Number(body.tabId);
+      rec.updatedAt = now();
+    }
+    const allowedProgress = [
+      "queued",
+      "planning",
+      "acting",
+      "running",
+      "waiting_user",
+      "waiting_file_picker",
+      "waiting_confirm",
+      "ready_for_publish",
+    ];
+    if (typeof body.status === "string" && allowedProgress.includes(body.status)) {
+      rec.status = body.status;
+      rec.updatedAt = now();
+    } else if (rec.status === "confirmed" || rec.status === "queued") {
+      rec.status = "acting";
+    }
     send(req, res, 200, payload(rec));
     return;
   }
@@ -443,7 +566,7 @@ async function handle(req, res) {
       sendError(req, res, ERRORS.not_found);
       return;
     }
-    rec.status = "awaiting_gate";
+    rec.status = "waiting_confirm";
     rec.allowGatedOnce = false;
     rec.gate = {
       kind: typeof body.kind === "string" ? body.kind : "publish",
@@ -573,8 +696,8 @@ async function handle(req, res) {
   if (req.method === "POST" && pathname === "/v1/tool") {
     const body = await parseJson(req, res);
     if (!body) return;
-    const rec = body.id ? resolveById(body.id) : getActive();
-    if (!rec || !BLOCKING_STATUSES.includes(rec.status)) {
+    const rec = body.id ? resolveById(body.id) : getWork() || getActive();
+    if (!rec || !isLiveStatus(rec.status)) {
       sendError(req, res, ERRORS.not_found);
       return;
     }
@@ -582,7 +705,7 @@ async function handle(req, res) {
       sendError(req, res, ERRORS.no_pending, { message: "Confirm-to-start first." });
       return;
     }
-    if (rec.status === "awaiting_gate") {
+    if (rec.status === "waiting_confirm" || rec.status === "awaiting_gate") {
       sendError(req, res, ERRORS.gated);
       return;
     }
@@ -591,13 +714,30 @@ async function handle(req, res) {
       sendError(req, res, parsed.error);
       return;
     }
+    const tabArg = parsed.value.args && (parsed.value.args.tabId != null ? parsed.value.args.tabId : body.tabId);
+    if (tabArg != null) {
+      const n = Number(tabArg);
+      if (rec.tabId != null && n !== Number(rec.tabId)) {
+        sendError(req, res, ERRORS.CROSS_ACT_TAB, { actId: rec.id, tabId: rec.tabId });
+        return;
+      }
+      const owner = actOwnsTab(n);
+      if (owner && owner.id !== rec.id) {
+        sendError(req, res, ERRORS.CROSS_ACT_TAB, { actId: owner.id, tabId: owner.tabId });
+        return;
+      }
+      if (Array.isArray(rec.forbiddenTabIds) && rec.forbiddenTabIds.map(Number).includes(n)) {
+        sendError(req, res, ERRORS.CROSS_ACT_TAB, { actId: rec.id, tabId: n });
+        return;
+      }
+    }
     rec.command = {
       id: newId("tool"),
       tool: parsed.value.tool,
       args: parsed.value.args,
       status: "queued",
     };
-    rec.status = "running";
+    rec.status = "acting";
     rec.updatedAt = now();
     rec.progress = `Tool queued: ${parsed.value.tool}`;
     logLine("tool", rec.id, parsed.value.tool, "queued");
@@ -617,6 +757,10 @@ async function handle(req, res) {
       rec.command.status = body.ok === false ? "error" : "done";
       rec.command.resultCode = typeof body.error === "string" ? body.error : null;
     }
+    if (!rec.planKind && rec.status === "acting") {
+      rec.status = "waiting_user";
+      rec.progress = rec.progress || "Waiting for the next /v1/tool call. Not running.";
+    }
     rec.updatedAt = now();
     send(req, res, 200, payload(rec));
     return;
@@ -630,8 +774,22 @@ async function handle(req, res) {
       sendError(req, res, ERRORS.not_found);
       return;
     }
-    const allowed = ["published", "failed", "completed"];
+    const allowed = ["published", "failed", "completed", "ready_for_publish"];
     const next = allowed.includes(body.status) ? body.status : "failed";
+    if (next === "ready_for_publish") {
+      rec.status = "ready_for_publish";
+      rec.allowGatedOnce = false;
+      rec.error = null;
+      rec.progress =
+        typeof body.message === "string"
+          ? body.message
+          : "Upload is ready. Publish/Save was not clicked (noPublish=true).";
+      rec.step = rec.step || "ready_for_publish";
+      rec.updatedAt = now();
+      logLine("result", rec.id, rec.kind, rec.status);
+      send(req, res, 200, payload(rec));
+      return;
+    }
     finish(
       rec,
       next,
