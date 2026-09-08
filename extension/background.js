@@ -532,6 +532,51 @@ async function runFill(act) {
   await overlayShow(tabId, youtubeUpload ? "YouTube upload" : "Acting");
   await cdpAttachRetry(tabId, 2);
 
+  if (act.platform === "web") {
+    await setStep(act.id, "Open page", tabId);
+    let attached = false;
+    if (act.mediaPath) {
+      await setStep(act.id, "Attach file", tabId);
+      const fileResult = await attachFileOnTab(tabId, act.mediaPath, null);
+      if (!fileResult.ok) {
+        if (fileResult.error === "file_chooser_user_pick") {
+          await companion("/v1/progress", {
+            method: "POST",
+            body: JSON.stringify({
+              id: act.id,
+              status: "waiting_file_picker",
+              step: "attach_file",
+              message: fileResult.message || "You pick the file in the highlighted picker. Send was not clicked.",
+            }),
+          });
+          return;
+        }
+        await reportResult(
+          act.id,
+          "failed",
+          fileResult.error || "ui_missing",
+          fileResult.message || "Could not attach the file. Fail closed. Send was not clicked."
+        );
+        return;
+      }
+      attached = true;
+    }
+    await snapshotTab(tabId, act.id);
+    await companion("/v1/progress", {
+      method: "POST",
+      body: JSON.stringify({
+        id: act.id,
+        status: "waiting_user",
+        step: "waiting_user",
+        message: attached
+          ? "Opened the page and attached the file. Waiting for a /v1/tool call. Publish/Send/Pay/Delete/Share still require Confirm."
+          : "Opened the page. Waiting for a /v1/tool call (click, type, attachFile, snapshot). Publish/Send/Pay/Delete/Share still require Confirm.",
+      }),
+    });
+    await overlayShow(tabId, attached ? "File attached" : "Page open", { phase: "acting", verb: "Waiting" });
+    return;
+  }
+
   if (act.platform === "youtube" || act.platform === "instagram") {
     await setStep(act.id, youtubeUpload ? "YouTube: fill composer" : "Fill composer", tabId);
     const result = await sendTab(tabId, {
