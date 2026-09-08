@@ -39,7 +39,14 @@ const YT_TAGS = [
 
 const YT_NEXT = ["ytcp-button#next-button", "#next-button"];
 
-const YT_DONE = ["ytcp-button#done-button", "#done-button"];
+const YT_DONE = [
+  "ytcp-uploads-dialog ytcp-button#done-button",
+  "ytcp-uploads-dialog #done-button",
+  "ytcp-button#done-button",
+  "#done-button",
+  "ytcp-button#publish-button",
+  "#publish-button",
+];
 
 const YT_CREATE = [
   "ytcp-button#create-icon",
@@ -62,11 +69,49 @@ function ytStep(requestId, stepId, message) {
   chrome.runtime.sendMessage({ type: "LPC_PLAN_STEP", id: requestId, planStep: stepId, message }).catch(() => {});
 }
 
+function ytControlLabel(el) {
+  if (!el) return "";
+  const parts = [
+    el.innerText || "",
+    el.textContent || "",
+    el.getAttribute("aria-label") || "",
+    el.getAttribute("label") || "",
+  ];
+  const shadow = el.shadowRoot;
+  if (shadow) {
+    const nodes = shadow.querySelectorAll("button, .label, #text, yt-formatted-string, .ytcp-button-shape");
+    for (const node of nodes) {
+      parts.push(node.innerText || "", node.textContent || "", node.getAttribute("aria-label") || "");
+    }
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function ytHostVisible(el) {
+  if (!el || !(el instanceof Element)) return false;
+  if (lpcVisible(el)) return true;
+  const shadow = el.shadowRoot;
+  if (!shadow) return false;
+  const inner = shadow.querySelector("button, a, .ytcp-button-shape");
+  return Boolean(inner && lpcVisible(inner));
+}
+
+function ytGateDisabled(el) {
+  if (!el) return true;
+  if (el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true") return true;
+  const inner = el.shadowRoot && el.shadowRoot.querySelector("button");
+  if (inner && (inner.disabled || inner.getAttribute("aria-disabled") === "true")) return true;
+  return false;
+}
+
+function ytIsPublishGateLabel(label) {
+  if (!label) return false;
+  if (/\b(next|cancel|back|discard)\b/.test(label) && !/publish|save|done/.test(label)) return false;
+  return /\b(publish|post|save|done)\b/.test(label);
+}
+
 function ytTextMatch(node, texts) {
-  const label = `${node.innerText || ""} ${node.textContent || ""} ${node.getAttribute("aria-label") || ""}`
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+  const label = ytControlLabel(node);
   return texts.some((t) => label.includes(String(t).trim().toLowerCase()));
 }
 
@@ -75,22 +120,33 @@ function ytByText(tagNames, texts) {
   if (exact) return exact;
   const nodes = document.querySelectorAll(tagNames.join(","));
   for (const node of nodes) {
-    if (!lpcVisible(node)) continue;
+    if (!ytHostVisible(node)) continue;
     if (ytTextMatch(node, texts)) return node;
   }
   return null;
 }
 
 function ytPublishControl() {
-  const done = lpcFirst(YT_DONE);
-  if (done) {
-    const label = `${done.innerText || ""} ${done.getAttribute("aria-label") || ""}`.toLowerCase();
-    if (/publish|post|save|done/.test(label)) return done;
+  const dialog = document.querySelector("ytcp-uploads-dialog");
+  const searchRoots = dialog ? [dialog, document] : [document];
+  for (const root of searchRoots) {
+    const nodes = root.querySelectorAll(YT_DONE.join(","));
+    for (const done of nodes) {
+      if (!ytHostVisible(done) || ytGateDisabled(done)) continue;
+      const label = ytControlLabel(done);
+      // Studio often leaves the light DOM empty; the Save/Publish text is in the shadow root.
+      if (!label || ytIsPublishGateLabel(label)) return done;
+    }
   }
-  return ytByText(
-    ["ytcp-button", "button", "yt-button-shape", "yt-formatted-string"],
-    ["Publish", "Save", "Done"]
-  );
+  const scope = dialog || document;
+  const buttons = scope.querySelectorAll("ytcp-button, button, yt-button-shape");
+  for (const node of buttons) {
+    if (!ytHostVisible(node) || ytGateDisabled(node)) continue;
+    const id = (node.id || "").toLowerCase();
+    if (id === "next-button" || id === "create-button" || id === "create-icon") continue;
+    if (ytIsPublishGateLabel(ytControlLabel(node))) return node;
+  }
+  return null;
 }
 
 function ytLooksLikeStudioUpload() {
@@ -289,9 +345,9 @@ async function ytSelectVisibility(request) {
 
 async function ytStop(request) {
   ytStep(request.id, "stop_publish", "Reached the final Publish/Save/Done control. Not clicking it.");
-  const gateEl = await lpcWait(() => ytPublishControl(), 8000);
+  const gateEl = await lpcWait(() => ytPublishControl(), 12000);
   const name = gateEl
-    ? (gateEl.innerText || gateEl.getAttribute("aria-label") || "Publish").trim()
+    ? (ytControlLabel(gateEl) || gateEl.innerText || gateEl.getAttribute("aria-label") || "Publish").trim()
     : "Publish";
   if (request.noPublish) {
     return {
@@ -317,7 +373,7 @@ async function ytStop(request) {
     gate: {
       kind: "publish",
       name,
-      selector: "#done-button",
+      selector: gateEl.id ? `#${gateEl.id}` : "#done-button",
       url: location.href,
       preview: `About to click “${name}” on YouTube Studio. Confirm to publish or save, or Deny to abort.`,
     },
