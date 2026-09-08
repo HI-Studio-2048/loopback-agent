@@ -301,11 +301,12 @@ function normalizeAudience(value) {
 function inferPlatform(body, intent, startUrl) {
   if (typeof body.platform === "string" && body.platform.trim()) {
     const p = body.platform.trim().toLowerCase();
+    if (p === "web" || p === "tab" || p === "generic") return { value: "web" };
     if (!PLATFORMS.includes(p)) {
       return {
         error: {
           ...ERRORS.invalid_request,
-          message: "platform must be youtube or instagram.",
+          message: "platform must be youtube, instagram, or web.",
         },
       };
     }
@@ -314,6 +315,7 @@ function inferPlatform(body, intent, startUrl) {
   const blob = `${intent || ""} ${startUrl || ""}`;
   if (/instagram\.com|\binstagram\b/i.test(blob)) return { value: "instagram" };
   if (/youtube\.com|studio\.youtube|\byoutube\b/i.test(blob)) return { value: "youtube" };
+  if (startUrl) return { value: "web" };
   return { value: null };
 }
 
@@ -328,15 +330,7 @@ function validateAct(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { error: ERRORS.invalid_request };
   }
-  const intent = typeof body.intent === "string" ? body.intent.trim() : "";
-  if (!intent || intent.length > 8000) {
-    return {
-      error: {
-        ...ERRORS.invalid_request,
-        message: "Body must be JSON with a non-empty intent string.",
-      },
-    };
-  }
+  let intent = typeof body.intent === "string" ? body.intent.trim() : "";
   let startUrl = null;
   if (body.startUrl != null && body.startUrl !== "") {
     if (!isHttpUrl(body.startUrl)) {
@@ -348,7 +342,32 @@ function validateAct(body) {
   }
   const inferred = inferPlatform(body, intent, startUrl);
   if (inferred.error) return inferred;
-  const platform = inferred.value;
+  let platform = inferred.value;
+  if (!intent) {
+    const cap = body.caption == null ? "" : String(body.caption).trim();
+    const title = body.title == null ? "" : String(body.title).trim();
+    intent = cap || title;
+  }
+  if (!intent && startUrl && (platform === "web" || platform == null)) {
+    intent = `Open ${startUrl}`;
+    if (!platform) platform = "web";
+  }
+  if (!intent || intent.length > 8000) {
+    return {
+      error: {
+        ...ERRORS.invalid_request,
+        message: "Body must be JSON with a non-empty intent string, or startUrl for a web act.",
+      },
+    };
+  }
+  if (platform === "web" && !startUrl) {
+    return {
+      error: {
+        ...ERRORS.invalid_request,
+        message: "web acts need an http(s) startUrl.",
+      },
+    };
+  }
 
   const vis = normalizeVisibility(body.visibility);
   if (vis === undefined) {
