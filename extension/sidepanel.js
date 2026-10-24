@@ -22,8 +22,8 @@ const panelFail = $("panel-fail");
 
 if (!companionStatus || !empty || !preview || !confirmBtn || !denyBtn || !permList || !overlayToggle) {
   document.body.innerHTML =
-    "<p style='padding:1rem;font:14px/1.4 sans-serif'>Side panel failed to render. Gated actions will not run. Reload the Loopback Agent side panel.</p>";
-  throw new Error("Loopback Agent side panel failed to render.");
+    "<p style='padding:1rem;font:14px/1.4 sans-serif'>Side panel failed to render. Gated actions will not run. Reload the Baby Maker side panel.</p>";
+  throw new Error("Baby Maker side panel failed to render.");
 }
 
 let current = null;
@@ -351,7 +351,7 @@ async function revokeOrigin(origin) {
 if (panelFail) panelFail.hidden = true;
 
 if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
-  setCompanion("down", "Open this panel from the Loopback Agent extension. Gated actions will not run here.");
+  setCompanion("down", "Open this panel from the Baby Maker extension. Gated actions will not run here.");
   render(null);
 } else {
   confirmBtn.addEventListener("click", () => decide("LPC_CONFIRM"));

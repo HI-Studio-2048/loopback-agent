@@ -1,6 +1,6 @@
 # Grok / assistant playbook
 
-Loopback Agent is **local hands** for the user’s already-logged-in Chrome. You call a companion on **127.0.0.1 only**. Do not deploy it, tunnel it, or bind `0.0.0.0`.
+Baby Maker is **local hands** for the user’s already-logged-in Chrome. You call a companion on **127.0.0.1 only**. Do not deploy it, tunnel it, or bind `0.0.0.0`.
 
 Repo: https://github.com/HI-Studio-2048/loopback-agent
 
@@ -22,7 +22,7 @@ One act at a time. `409 already_pending` means deny or wait.
 ```bash
 curl -sS -X POST http://127.0.0.1:18741/v1/act \
   -H 'Content-Type: application/json' \
-  -d '{"platform":"youtube","intent":"Upload this video to YouTube Studio","mediaPath":"/absolute/path/video.mp4","title":"Studio upload test","description":"Loopback companion upload","visibility":"UNLISTED","noPublish":true}'
+  -d '{"platform":"youtube","intent":"Upload this video to YouTube Studio","mediaPath":"/absolute/path/video.mp4","title":"Studio upload test","description":"Baby Maker companion upload","visibility":"UNLISTED","noPublish":true}'
 ```
 
 `mediaPath`, `title`, `description`, and `visibility` are stored on the act (local path is okay; never cookies/tokens). Sequence: `queued` → `planning` → `acting` → `ready_for_publish`. Publish/Save is not clicked when `noPublish` is true.

@@ -306,7 +306,7 @@ function statusPage() {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Loopback Agent companion</title>
+  <title>Baby Maker companion</title>
   <style>
     :root { color-scheme: dark; }
     body { font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; margin: 0; background: #12110f; color: #ece7dc; }
@@ -322,7 +322,7 @@ function statusPage() {
 <body>
   <main>
     <p class="ok">listening on 127.0.0.1 only</p>
-    <h1>Loopback Agent companion</h1>
+    <h1>Baby Maker companion</h1>
     <p>This process never publishes. It queues one act. Publish/Send/Pay/Delete/Share wait for Confirm in the Chrome side panel.</p>
     <p class="warn">Do not expose this port. Do not deploy this server to Railway, a VPS, or any tunnel.</p>
     <h2>Active act</h2>
