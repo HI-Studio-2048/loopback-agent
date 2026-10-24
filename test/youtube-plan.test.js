@@ -12,7 +12,7 @@ describe("validateAct preserves structured upload fields", () => {
       intent: "Upload this video to YouTube Studio",
       mediaPath: "/absolute/path/video.mp4",
       title: "Studio upload test",
-      description: "Loopback companion upload",
+      description: "Baby Maker companion upload",
       visibility: "UNLISTED",
       noPublish: true,
       tags: ["loopback", "test"],
@@ -22,8 +22,8 @@ describe("validateAct preserves structured upload fields", () => {
     assert.equal(value.platform, "youtube");
     assert.equal(value.mediaPath, "/absolute/path/video.mp4");
     assert.equal(value.title, "Studio upload test");
-    assert.equal(value.description, "Loopback companion upload");
-    assert.equal(value.caption, "Loopback companion upload");
+    assert.equal(value.description, "Baby Maker companion upload");
+    assert.equal(value.caption, "Baby Maker companion upload");
     assert.equal(value.visibility, "UNLISTED");
     assert.equal(value.noPublish, true);
     assert.equal(value.audience, "not_for_kids");

@@ -43,6 +43,12 @@ describe("loopback companion", () => {
     assert.equal(data.bind, "127.0.0.1");
   });
 
+  it("refuses to bind any host other than 127.0.0.1", () => {
+    const extra = createServer();
+    assert.throws(() => listen(extra, 0, "0.0.0.0"), /127\.0\.0\.1 only/);
+    assert.throws(() => listen(extra, 0, "localhost"), /127\.0\.0\.1 only/);
+  });
+
   it("schema still hard-gates Publish/Send/Pay/Delete/Share", () => {
     const { ERRORS, GATED_VERBS } = require("../shared/schema");
     assert.deepEqual(GATED_VERBS, ["publish", "post", "share", "send", "pay", "delete"]);
@@ -242,7 +248,7 @@ describe("loopback companion", () => {
       intent: "Upload this video to YouTube Studio",
       mediaPath: "/absolute/path/video.mp4",
       title: "Studio upload test",
-      description: "Loopback companion upload",
+      description: "Baby Maker companion upload",
       visibility: "UNLISTED",
       noPublish: true,
     });
@@ -250,7 +256,7 @@ describe("loopback companion", () => {
     const act = created.data.act;
     assert.equal(act.mediaPath, "/absolute/path/video.mp4");
     assert.equal(act.title, "Studio upload test");
-    assert.equal(act.description, "Loopback companion upload");
+    assert.equal(act.description, "Baby Maker companion upload");
     assert.equal(act.visibility, "UNLISTED");
     assert.equal(act.noPublish, true);
     assert.equal(act.platform, "youtube");

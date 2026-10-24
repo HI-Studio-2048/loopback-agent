@@ -1,4 +1,4 @@
-# Loopback Agent
+# Baby Maker
 
 A **local** Chrome MV3 agent plus a tiny companion on **127.0.0.1 only**. An assistant queues **one** act. Navigation, click, and type can run in your already-logged-in Chrome profile. **Publish / Post / Send / Pay / Delete / Share always stop** for Confirm in the side panel.
 
@@ -37,7 +37,7 @@ Expect `127.0.0.1:18741`. Never `0.0.0.0`. Use **`http://127.0.0.1`**, not `loca
 1. Open `chrome://extensions`
 2. Developer mode → **Load unpacked**
 3. Select the **`extension` folder** (the folder that contains `manifest.json`, not the repo root)
-4. Open the **Loopback Agent** side panel
+4. Open the **Baby Maker** side panel
 
 ### 4. Grant site access
 
@@ -53,10 +53,10 @@ Gated actions still require Confirm on an allowed host.
 
 ### 5. YouTube upload (stops before Publish/Save)
 
-Reload the unpacked extension after pulling (`chrome://extensions` → Loopback Agent → **Reload**). Allow `https://studio.youtube.com` in the side panel. Then:
+Reload the unpacked extension after pulling (`chrome://extensions` → Baby Maker → **Reload**). Allow `https://studio.youtube.com` in the side panel. Then:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:18741/v1/act -H 'Content-Type: application/json' -d '{"platform":"youtube","intent":"Upload this video to YouTube Studio","mediaPath":"/absolute/path/video.mp4","title":"Studio upload test","description":"Loopback companion upload","visibility":"UNLISTED","noPublish":true}'
+curl -sS -X POST http://127.0.0.1:18741/v1/act -H 'Content-Type: application/json' -d '{"platform":"youtube","intent":"Upload this video to YouTube Studio","mediaPath":"/absolute/path/video.mp4","title":"Studio upload test","description":"Baby Maker companion upload","visibility":"UNLISTED","noPublish":true}'
 ```
 
 Expected status sequence: **`queued` → `planning` → `acting`** (open Studio tab, overlay ping, Create, Upload videos, attachFile, title, description, not-made-for-kids, Next, Unlisted) → **`ready_for_publish`**. Publish/Save/Done is **not** clicked. `mediaPath` stays on `GET /v1/pending`. This is **not** `running` while waiting for manual `/v1/tool` calls.
@@ -114,7 +114,7 @@ Click args: `{ "tool": "click", "ref": "e3" }` or `selector` / `role` + `name`. 
 
 - Companion binds **127.0.0.1 only**. Never `0.0.0.0`. **Never deploy to Railway**, a VPS, Docker publish, or a tunnel.
 - Confirm for publish / send / pay / delete / share.
-- Snapshots stay in extension memory and the loopback companion. They are not logged.
+- Snapshots stay in extension memory and the Baby Maker companion. They are not logged.
 - Never commit cookies, tokens, or Chrome sessions.
 - CDP is used **on the tab we act on** only. No cookie export, no proxies, no headless profile theft.
 
@@ -126,7 +126,7 @@ Click args: `{ "tool": "click", "ref": "e3" }` or `selector` / `role` + `name`. 
 
 **File inputs:** page scripts cannot set `<input type=file>`. Direct `DOM.setFileInputFiles` on a guessed node often returns **-32000 Not allowed** ([Chromium #928255](https://crbug.com/928255)). The legal path is intercept the chooser, trigger it, then set files on the `fileChooserOpened` `backendNodeId`. If intercept fails or the chooser never fires, the tool returns **`file_chooser_user_pick`** and does **not** claim the file was set — pick it in the highlighted picker. `/v1/prepare-file` copies the local path into a world-readable temp file so Chrome can read it.
 
-Claude-in-Chrome pairs a cloud model with this kind of tab control. Loopback Agent is the **local hands** plus a visible cursor: least-privilege default, optional `<all_urls>` only after a side-panel gesture, hard Confirm on irreversible actions.
+Claude-in-Chrome pairs a cloud model with this kind of tab control. Baby Maker is the **local hands** plus a visible cursor: least-privilege default, optional `<all_urls>` only after a side-panel gesture, hard Confirm on irreversible actions.
 
 ## Tests
 

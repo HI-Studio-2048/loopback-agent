@@ -124,7 +124,7 @@ if (!window.__LPC_OVERLAY__) {
     shadow.innerHTML = `<style>${CSS}</style>
       <div class="layer">
         <div class="tabchip" id="tabchip"><span>Grok</span></div>
-        <div class="hud" id="hud" title="Loopback Agent"></div>
+        <div class="hud" id="hud" title="Baby Maker"></div>
         <div class="ring" id="ring"></div>
         <div class="ripple" id="ripple"></div>
         <div class="chip" id="chip"></div>

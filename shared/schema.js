@@ -1,5 +1,5 @@
 /**
- * Shared schema for the loopback companion and MV3 agent.
+ * Shared schema for the Baby Maker companion and MV3 agent.
  * Keep this file free of secrets, cookies, and tokens.
  */
 
@@ -134,7 +134,7 @@ const ERRORS = {
   needs_permission: {
     code: "needs_permission",
     http: 403,
-    message: "Grant this site (or all sites) from the Loopback Agent side panel, then retry.",
+    message: "Grant this site (or all sites) from the Baby Maker side panel, then retry.",
   },
   file_unreadable: {
     code: "file_unreadable",
@@ -180,14 +180,14 @@ const ERRORS = {
     code: "EXTENSION_DISCONNECTED",
     http: 422,
     message:
-      "Extension stopped talking to the companion. Reload Loopback and keep the side panel open. The act did not continue.",
+      "Extension stopped talking to the companion. Reload Baby Maker and keep the side panel open. The act did not continue.",
     retryable: true,
   },
   WRONG_PROFILE: {
     code: "WRONG_PROFILE",
     http: 422,
     message:
-      "Companion is up but this Chrome never polls. Load Loopback in this profile and keep the side panel open.",
+      "Companion is up but this Chrome never polls. Load Baby Maker in this profile and keep the side panel open.",
     retryable: true,
   },
   CROSS_ACT_TAB: {

@@ -12,6 +12,9 @@ test("unpacked extension is valid MV3 (manifest.json, not manifest.js)", () => {
   assert.equal(fs.existsSync(path.join(root, "manifest.js")), false);
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
   assert.equal(manifest.manifest_version, 3);
+  assert.equal(manifest.name, "Baby Maker");
+  assert.equal(manifest.short_name, "Baby Maker");
+  assert.equal(manifest.action.default_title, "Baby Maker");
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.equal(manifest.background.service_worker, "background.js");
 });
@@ -65,7 +68,7 @@ test("overlay script is a visible clicker (not stealth)", () => {
   assert.match(src, /playClick/);
   assert.match(src, /playType/);
   assert.match(src, /ripple/);
-  assert.match(src, /Loopback Agent/);
+  assert.match(src, /Baby Maker/);
   assert.match(src, /bottom:\s*12px/);
   assert.match(src, /Confirm pending/);
   assert.match(src, /You pick/);
